@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebRTC with FastAPI Signaling</title>
+</head>
+<body>
+    <h1>WebRTC with FastAPI Signaling</h1>
+    <video id="localVideo" autoplay muted playsinline></video>
+    <video id="remoteVideo" autoplay playsinline></video>
+    <button id="startCall">Start Call</button>
+
+    <script>
+        const localVideo = document.getElementById('localVideo');
+        const remoteVideo = document.getElementById('remoteVideo');
+        const startCallButton = document.getElementById('startCall');
+
+        let localStream;
+        const peerConnection = new RTCPeerConnection({
+            iceServers: [] // 같은 네트워크에서는 STUN 서버 필요 없음
+        });
+
+        // FastAPI WebSocket 연결
+        const signalingServer = new WebSocket('ws://localhost:8000/ws');
+
+        signalingServer.onmessage = async (event) => {
+            const message = JSON.parse(event.data);
+
+            if (message.type === 'offer') {
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(message));
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                signalingServer.send(JSON.stringify(peerConnection.localDescription));
+            } else if (message.type === 'answer') {
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(message));
+            } else if (message.type === 'candidate') {
+                try {
+                    await peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
+                } catch (e) {
+                    console.error('Error adding ICE candidate:', e);
+                }
+            }
+        };
+
+        // ICE 후보 처리
+        peerConnection.onicecandidate = (event) => {
+            if (event.candidate) {
+                signalingServer.send(JSON.stringify({ type: 'candidate', candidate: event.candidate }));
+            }
+        };
+
+        // 원격 스트림 수신
+        peerConnection.ontrack = (event) => {
+            remoteVideo.srcObject = event.streams[0];
+        };
+
+        // 로컬 스트림 설정
+        async function startLocalStream() {
+            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            localVideo.srcObject = localStream;
+
+            // 로컬 트랙을 PeerConnection에 추가
+            localStream.getTracks().forEach((track) => {
+                peerConnection.addTrack(track, localStream);
+            });
+        }
+
+        // 통화 시작 버튼
+        startCallButton.addEventListener('click', async () => {
+            await startLocalStream();
+
+            if (peerConnection.iceConnectionState === 'new') {
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+                signalingServer.send(JSON.stringify(peerConnection.localDescription));
+            }
+        });
+    </script>
+</body>
+</html>
